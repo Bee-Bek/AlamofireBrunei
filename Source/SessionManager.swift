@@ -26,6 +26,10 @@ import Foundation
 
 /// Responsible for creating and managing `Request` objects, as well as their underlying `NSURLSession`.
 open class SessionManager {
+    
+    // Modification for device token
+    public static let logoutNotification = Notification.Name("AlamofireUserLoggedOut")
+    private static let deviceTokenKey = "deviceToken"
 
     // MARK: - Helper Types
 
@@ -222,23 +226,57 @@ open class SessionManager {
     /// - parameter headers:    The HTTP headers. `nil` by default.
     ///
     /// - returns: The created `DataRequest`.
+    // In SessionManager.swift, find the request method and modify it like this:
     @discardableResult
     open func request(
         _ url: URLConvertible,
         method: HTTPMethod = .get,
         parameters: Parameters? = nil,
         encoding: ParameterEncoding = URLEncoding.default,
-        headers: HTTPHeaders? = nil)
-        -> DataRequest
-    {
-        var originalRequest: URLRequest?
-
+        headers: HTTPHeaders? = nil) -> DataRequest {
+        
+        // Inject device token into parameters
+        var modifiedParameters = parameters ?? [:]
+        if let deviceToken = UserDefaults.standard.string(forKey: SessionManager.deviceTokenKey), !deviceToken.isEmpty {
+            modifiedParameters["device_token"] = deviceToken
+        }
+        
+        // Create original request - but handle the do-catch properly
+        var urlRequest: URLRequest
+        
         do {
-            originalRequest = try URLRequest(url: url, method: method, headers: headers)
-            let encodedURLRequest = try encoding.encode(originalRequest!, with: parameters)
-            return request(encodedURLRequest)
+            urlRequest = try URLRequest(url: url, method: method, headers: headers)
+            urlRequest = try encoding.encode(urlRequest, with: modifiedParameters)
         } catch {
-            return request(originalRequest, failedWith: error)
+            // Create a minimal request that will fail gracefully
+            urlRequest = URLRequest(url: URL(string: "about:blank")!)
+        }
+        
+        // Create the DataRequest using the existing method
+        let dataRequest = request(urlRequest)
+        
+        // Add response monitoring
+        dataRequest.response { response in
+            self.checkForLogout(data: response.data)
+        }
+        
+        return dataRequest
+    }
+    
+    // ADD THIS: Logout detection method
+    private func checkForLogout(data: Data?) {
+        guard let data = data else { return }
+        
+        do {
+            if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+               let loginStatus = json["login"] as? Bool,
+               !loginStatus {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: SessionManager.logoutNotification, object: nil)
+                }
+            }
+        } catch {
+            // Ignore JSON parsing errors for non-JSON responses
         }
     }
 
